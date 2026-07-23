@@ -379,13 +379,13 @@ function createBot() {
 
     bot.loadPlugin(pathfinder);
 
-    // Connection timeout - if no spawn in 60s, reconnect
+    // Connection timeout - if no spawn in 3 minutes, reconnect (Aternos queues can be slow)
     const connectionTimeout = setTimeout(() => {
       if (!botState.connected) {
         console.log('[Bot] Connection timeout - no spawn received');
         scheduleReconnect();
       }
-    }, 60000);
+    }, 3 * 60 * 1000);
 
     bot.once('spawn', () => {
       clearTimeout(connectionTimeout);
@@ -469,7 +469,9 @@ function createBot() {
       }
 
       if (config.utils['auto-reconnect']) {
-        scheduleReconnect();
+        // If throttled by server, wait 30s before retrying to avoid ban
+        const isThrottled = typeof reason === 'string' && reason.toLowerCase().includes('throttl');
+        scheduleReconnect(isThrottled ? 30000 : null);
       }
     });
 
@@ -485,7 +487,7 @@ function createBot() {
   }
 }
 
-function scheduleReconnect() {
+function scheduleReconnect(overrideDelay = null) {
   if (reconnectTimeout) {
     clearTimeout(reconnectTimeout);
   }
@@ -497,7 +499,7 @@ function scheduleReconnect() {
   isReconnecting = true;
   botState.reconnectAttempts++;
 
-  const delay = getReconnectDelay();
+  const delay = overrideDelay !== null ? overrideDelay : getReconnectDelay();
   console.log(`[Bot] Reconnecting in ${delay / 1000}s (attempt #${botState.reconnectAttempts})`);
 
   reconnectTimeout = setTimeout(() => {
