@@ -47,17 +47,10 @@ function setupLeaveRejoin(bot, createBot) {
     function scheduleReconnect(reason = 'end') {
         if (stopped) return
 
-        // FAST RECONNECT: 2s -> 10s (User requested faster)
-        let delay = randomMs(2000, 10000)
+        // Fixed 4-second reconnect as requested
+        const delay = 4000
 
-        // Slight backoff for repeated failures, but keep it snappy
         reconnectAttempts++
-        if (reconnectAttempts > 3) {
-            delay += 5000 // Add 5s if it's failing a lot
-        }
-
-        // Cap at 30s max
-        delay = Math.min(delay, 15000)
 
         logThrottled(`[AFK] Rejoin scheduled in ${Math.round(delay / 1000)}s (reason: ${reason}, attempt: ${reconnectAttempts})`)
 
@@ -80,17 +73,16 @@ function setupLeaveRejoin(bot, createBot) {
         cleanup()
         stopped = false
 
-        // Stay connected: 2 minutes -> 15 minutes (More realistic AFK behavior)
-        // Stay connected 1-5 minutes before a scheduled leave/rejoin cycle.
-        const stayTime = randomMs(60000, 300000)
+        // Stay connected for exactly 1 hour before leaving/rejoining
+        const stayTime = 60 * 60 * 1000 // 1 hour
 
-        logThrottled(`[AFK] Will leave in ${Math.round(stayTime / 1000)} seconds`)
+        logThrottled(`[AFK] Will leave in ${Math.round(stayTime / 1000)} seconds (1 hour)`)
 
         scheduleNextJump()
 
         leaveTimer = setTimeout(() => {
             if (stopped) return
-            logThrottled('[AFK] Leaving server (timer)')
+            logThrottled('[AFK] Leaving server (1-hour timer)')
             cleanup()
             try {
                 bot.quit()
