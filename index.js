@@ -4,11 +4,13 @@ const { GoalBlock } = goals;
 const config = require('./settings.json');
 const express = require('express');
 const http = require('http');
+const net = require('net');
 
 // ============================================================
-// EXPRESS SERVER - Keep Render/Aternos alive
+// EXPRESS SERVER
 // ============================================================
 const app = express();
+app.use(express.json());
 const PORT = process.env.PORT || 5000;
 
 // Bot state tracking
@@ -20,250 +22,385 @@ let botState = {
   errors: []
 };
 
-// Health check endpoint for monitoring
-// Health check endpoint for monitoring
+// Manual stop flag — when true, auto-reconnect is disabled
+let manualStop = false;
+// Last measured ping to MC server (ms)
+let lastPingMs = null;
+
+// TCP ping to Minecraft server
+function measurePing() {
+  const sock = new net.Socket();
+  const start = Date.now();
+  sock.setTimeout(4000);
+  sock.connect(config.server.port, config.server.ip, () => {
+    lastPingMs = Date.now() - start;
+    sock.destroy();
+  });
+  sock.on('error', () => { lastPingMs = null; sock.destroy(); });
+  sock.on('timeout', () => { lastPingMs = null; sock.destroy(); });
+}
+// Measure ping every 10 seconds
+measurePing();
+setInterval(measurePing, 10000);
+
+// ── CONTROL PANEL ──────────────────────────────────────────
 app.get('/', (req, res) => {
-  // "Blue Teal Shadow" Theme - Live Dashboard
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>${config.name} Status</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background: #0f172a; 
-            color: #f8fafc; 
-            display: flex; 
-            justify-content: center; 
-            align-items: center; 
-            height: 100vh; 
-            margin: 0; 
-            overflow: hidden;
-          }
-          .container {
-            background: #1e293b;
-            padding: 40px;
-            border-radius: 20px;
-            box-shadow: 0 0 50px rgba(45, 212, 191, 0.2);
-            text-align: center;
-            width: 400px;
-            border: 1px solid #334155;
-            transition: box-shadow 0.3s ease;
-          }
-          h1 { margin-bottom: 30px; font-size: 24px; color: #ccfbf1; display: flex; align-items: center; justify-content: center; gap: 10px; }
-          .stat-card {
-            background: #0f172a;
-            padding: 15px;
-            margin: 15px 0;
-            border-radius: 12px;
-            border-left: 5px solid #2dd4bf;
-            text-align: left;
-            box-shadow: 5px 5px 15px rgba(0, 0, 0, 0.3);
-            position: relative;
-            overflow: hidden;
-          }
-          .label { font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
-          .value { font-size: 18px; font-weight: bold; color: #2dd4bf; text-shadow: 0 0 10px rgba(45, 212, 191, 0.5); margin-top: 5px; }
-          .status-dot { 
-            height: 12px; width: 12px; 
-            border-radius: 50%; 
-            display: inline-block; 
-            margin-right: 8px;
-            box-shadow: 0 0 10px currentColor;
-            transition: color 0.3s ease, box-shadow 0.3s ease;
-            background-color: currentColor; /* Use CSS for the dot color */
-          }
-          /* Override specific IDs to set background color for the dot */
-          #live-indicator { background-color: currentColor; }
-          
-          .pulse { animation: pulse 2s infinite; }
-          @keyframes pulse {
-            0% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.5; transform: scale(1.1); }
-            100% { opacity: 1; transform: scale(1); }
-          }
-          .btn-guide {
-            display: inline-block; margin-top: 20px; padding: 12px 24px; 
-            background: #2dd4bf; color: #0f172a; text-decoration: none; 
-            border-radius: 8px; font-weight: bold; 
-            box-shadow: 0 0 15px rgba(45, 212, 191, 0.4);
-            transition: transform 0.2s;
-          }
-          .btn-guide:hover { transform: translateY(-2px); }
-          .connection-bar {
-            height: 4px; background: #334155; width: 100%; margin-top: 20px; border-radius: 2px; overflow: hidden;
-          }
-          .connection-fill {
-            height: 100%; width: 100%; background: #2dd4bf;
-            animation: loading 2s infinite linear;
-            transform-origin: 0% 50%;
-          }
-          @keyframes loading {
-            0% { transform: translateX(-100%); }
-            100% { transform: translateX(100%); }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container" id="main-container">
-          <h1>
-            <span id="live-indicator" class="status-dot pulse" style="color: #ef4444;"></span> 
-            ${config.name}
-          </h1>
-          
-          <div class="stat-card">
-            <div class="label">Status</div>
-            <div class="value" id="status-text">Connecting...</div>
-          </div>
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>${config.name} — Control Panel</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #080e1a;
+      --surface:  #0f1e2e;
+      --card:     #152031;
+      --border:   #1e3348;
+      --teal:     #2dd4bf;
+      --teal-dim: #134e4a;
+      --green:    #4ade80;
+      --red:      #f87171;
+      --yellow:   #fbbf24;
+      --gray:     #64748b;
+      --text:     #e2e8f0;
+      --muted:    #94a3b8;
+    }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px 16px 40px;
+    }
+    /* ── Header ── */
+    header {
+      display: flex; align-items: center; gap: 12px;
+      max-width: 820px; margin: 0 auto 28px;
+    }
+    .logo { font-size: 28px; }
+    header h1 { font-size: 22px; font-weight: 700; color: var(--teal); }
+    header p  { font-size: 13px; color: var(--muted); margin-top: 2px; }
+    #header-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--gray); margin-left: auto;
+      box-shadow: 0 0 8px var(--gray);
+      transition: background .4s, box-shadow .4s;
+      flex-shrink: 0;
+    }
 
-          <div class="stat-card">
-            <div class="label">Uptime</div>
-            <div class="value" id="uptime-text">0h 0m 0s</div>
-          </div>
+    /* ── Grid ── */
+    .grid {
+      max-width: 820px; margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 20px 22px;
+    }
+    .card.full { grid-column: 1 / -1; }
+    .card-title {
+      font-size: 11px; font-weight: 600; letter-spacing: 1.2px;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 14px;
+    }
 
-          <div class="stat-card">
-            <div class="label">Coordinates</div>
-            <div class="value" id="coords-text">Waiting...</div>
-          </div>
+    /* ── Status badge ── */
+    #status-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 20px; font-weight: 700;
+    }
+    .dot {
+      width: 11px; height: 11px; border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot.pulse { animation: pulse 1.8s ease-in-out infinite; }
+    @keyframes pulse {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: .5; transform: scale(1.25); }
+    }
 
-          <div class="stat-card">
-            <div class="label">Server</div>
-            <div class="value">${config.server.ip}</div>
-          </div>
+    /* ── Stat rows ── */
+    .stat-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+    }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-label { color: var(--muted); }
+    .stat-val   { font-weight: 600; color: var(--teal); }
 
-          <a href="/tutorial" class="btn-guide">View Setup Guide</a>
-          
-          <div class="connection-bar">
-            <div class="connection-fill" id="activity-bar"></div>
-          </div>
-          
-          <p style="color: #64748b; font-size: 12px; margin-top: 15px;">
-            Live connection to Bot Process
-          </p>
-        </div>
+    /* ── Network bar ── */
+    .bar-wrap {
+      background: var(--border); border-radius: 999px;
+      height: 8px; overflow: hidden; margin-top: 6px;
+    }
+    .bar-fill {
+      height: 100%; border-radius: 999px;
+      transition: width .6s ease, background .6s;
+    }
 
-        <script>
-          const formatUptime = (seconds) => {
-            const h = Math.floor(seconds / 3600);
-            const m = Math.floor((seconds % 3600) / 60);
-            const s = seconds % 60;
-            return \`\${h}h \${m}m \${s}s\`;
-          };
+    /* ── Buttons ── */
+    .btn-row { display: flex; gap: 12px; margin-top: 18px; }
+    .btn {
+      flex: 1; padding: 14px;
+      border: none; border-radius: 10px;
+      font-size: 15px; font-weight: 700; cursor: pointer;
+      transition: opacity .2s, transform .15s;
+      letter-spacing: .5px;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn:disabled { opacity: .35; cursor: not-allowed; }
+    .btn-start { background: var(--green); color: #071a0e; }
+    .btn-stop  { background: var(--red);   color: #1a0707; }
 
-          const updateStats = async () => {
-            try {
-              const res = await fetch('/health');
-              const data = await res.json();
-              
-              const statusText = document.getElementById('status-text');
-              const uptimeText = document.getElementById('uptime-text');
-              const coordsText = document.getElementById('coords-text');
-              const liveDot = document.getElementById('live-indicator');
-              const container = document.getElementById('main-container');
+    /* ── Log ── */
+    #log-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      max-height: 160px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+    #log-box .entry { display: flex; gap: 8px; }
+    #log-box .time  { color: var(--teal-dim); flex-shrink: 0; }
+    #log-box .err   { color: var(--red); }
+    #log-box .ok    { color: var(--green); }
 
-              // Update Status
-              if (data.status === 'connected') {
-                statusText.innerHTML = '<span class="status-dot" style="color: #4ade80;"></span> Online & Running';
-                statusText.style.color = '#2dd4bf';
-                liveDot.style.color = '#4ade80'; // Green pulse
-                container.style.boxShadow = '0 0 50px rgba(45, 212, 191, 0.2)';
-              } else {
-                statusText.innerHTML = '<span class="status-dot" style="color: #f87171;"></span> Reconnecting...';
-                statusText.style.color = '#f87171';
-                liveDot.style.color = '#f87171'; // Red pulse
-                container.style.boxShadow = '0 0 50px rgba(248, 113, 113, 0.2)';
-              }
+    /* ── Toast ── */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #1e293b; border: 1px solid var(--teal);
+      color: var(--teal); padding: 10px 22px; border-radius: 8px;
+      font-size: 14px; font-weight: 600;
+      opacity: 0; pointer-events: none;
+      transition: opacity .3s;
+    }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
 
-              // Update Uptime
-              uptimeText.innerText = formatUptime(data.uptime);
+<header>
+  <span class="logo">🤖</span>
+  <div>
+    <h1>${config.name}</h1>
+    <p>${config.server.ip}:${config.server.port} &nbsp;·&nbsp; MC ${config.server.version}</p>
+  </div>
+  <div id="header-dot"></div>
+</header>
 
-              // Update Coords
-              if (data.coords) {
-                coordsText.innerText = \`Coords: \${Math.floor(data.coords.x)}, \${Math.floor(data.coords.y)}, \${Math.floor(data.coords.z)}\`;
-              } else {
-                coordsText.innerText = 'Unknown Location';
-              }
+<div class="grid">
 
-            } catch (e) {
-              document.getElementById('status-text').innerText = 'System Offline';
-              document.getElementById('live-indicator').style.color = '#64748b'; // Grey
-            }
-          };
+  <!-- Status + Controls -->
+  <div class="card full">
+    <div class="card-title">Bot Status</div>
+    <div id="status-badge">
+      <span class="dot pulse" id="status-dot" style="background:var(--gray);box-shadow:0 0 8px var(--gray)"></span>
+      <span id="status-text">Loading…</span>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-start" id="btn-start" onclick="control('start')">▶ Start Bot</button>
+      <button class="btn btn-stop"  id="btn-stop"  onclick="control('stop')">■ Stop Bot</button>
+    </div>
+  </div>
 
-          // Poll every 1 second
-          setInterval(updateStats, 1000);
-          updateStats();
-        </script>
-      </body>
-    </html>
-  `);
+  <!-- Uptime & Coords -->
+  <div class="card">
+    <div class="card-title">Session</div>
+    <div class="stat-row"><span class="stat-label">Uptime</span>      <span class="stat-val" id="uptime">—</span></div>
+    <div class="stat-row"><span class="stat-label">Coordinates</span> <span class="stat-val" id="coords">—</span></div>
+    <div class="stat-row"><span class="stat-label">Reconnects</span>  <span class="stat-val" id="reconnects">—</span></div>
+  </div>
+
+  <!-- Network -->
+  <div class="card">
+    <div class="card-title">Network</div>
+    <div class="stat-row"><span class="stat-label">Ping to Server</span> <span class="stat-val" id="ping">—</span></div>
+    <div class="stat-row"><span class="stat-label">Quality</span>        <span class="stat-val" id="quality">—</span></div>
+    <div class="stat-row"><span class="stat-label">Memory (heap)</span>  <span class="stat-val" id="memory">—</span></div>
+    <div class="bar-wrap"><div class="bar-fill" id="ping-bar" style="width:0%;background:var(--green)"></div></div>
+  </div>
+
+  <!-- Log -->
+  <div class="card full">
+    <div class="card-title">Recent Events</div>
+    <div id="log-box"><div class="entry"><span class="time">--:--:--</span><span>Waiting for data…</span></div></div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+  const fmt = s => {
+    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s%60;
+    return h+'h '+m+'m '+ss+'s';
+  };
+  const fmtTime = () => new Date().toTimeString().slice(0,8);
+
+  const logEntries = [];
+  function addLog(msg, cls='') {
+    logEntries.unshift({ time: fmtTime(), msg, cls });
+    if (logEntries.length > 30) logEntries.pop();
+    renderLog();
+  }
+  function renderLog() {
+    const box = document.getElementById('log-box');
+    box.innerHTML = logEntries.map(e =>
+      '<div class="entry"><span class="time">'+e.time+'</span><span class="'+e.cls+'">'+e.msg+'</span></div>'
+    ).join('');
+  }
+
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg; t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2500);
+  }
+
+  let lastStatus = null;
+
+  async function poll() {
+    try {
+      const r = await fetch('/health');
+      const d = await r.json();
+
+      const dot    = document.getElementById('status-dot');
+      const txt    = document.getElementById('status-text');
+      const hdr    = document.getElementById('header-dot');
+      const startB = document.getElementById('btn-start');
+      const stopB  = document.getElementById('btn-stop');
+
+      let color, label;
+      if (d.manualStop) {
+        color = 'var(--gray)'; label = 'Stopped (manual)';
+        startB.disabled = false; stopB.disabled = true;
+      } else if (d.status === 'connected') {
+        color = 'var(--green)'; label = '🟢 Online & Running';
+        startB.disabled = true; stopB.disabled = false;
+      } else {
+        color = 'var(--yellow)'; label = '🟡 Reconnecting…';
+        startB.disabled = true; stopB.disabled = false;
+      }
+
+      dot.style.background  = color;
+      dot.style.boxShadow   = '0 0 10px '+color;
+      hdr.style.background  = color;
+      hdr.style.boxShadow   = '0 0 8px '+color;
+      txt.textContent = label;
+
+      if (lastStatus !== null && lastStatus !== d.status) {
+        addLog(d.status === 'connected' ? 'Bot connected to server' : 'Bot disconnected', d.status === 'connected' ? 'ok' : 'err');
+      }
+      lastStatus = d.status;
+
+      document.getElementById('uptime').textContent     = fmt(d.uptime);
+      document.getElementById('reconnects').textContent = d.reconnectAttempts;
+      document.getElementById('memory').textContent     = d.memoryMB.toFixed(1)+' MB';
+
+      if (d.coords) {
+        document.getElementById('coords').textContent =
+          Math.floor(d.coords.x)+', '+Math.floor(d.coords.y)+', '+Math.floor(d.coords.z);
+      } else {
+        document.getElementById('coords').textContent = 'Not in-game';
+      }
+
+      // Network ping
+      const pingEl = document.getElementById('ping');
+      const qualEl = document.getElementById('quality');
+      const bar    = document.getElementById('ping-bar');
+      if (d.pingMs !== null) {
+        pingEl.textContent = d.pingMs+'ms';
+        let q, qcolor, pct;
+        if      (d.pingMs < 80)  { q='Excellent'; qcolor='var(--green)';  pct=100; }
+        else if (d.pingMs < 150) { q='Good';      qcolor='var(--teal)';   pct=75;  }
+        else if (d.pingMs < 300) { q='Fair';      qcolor='var(--yellow)'; pct=45;  }
+        else                     { q='Poor';      qcolor='var(--red)';    pct=20;  }
+        qualEl.textContent     = q;
+        qualEl.style.color     = qcolor;
+        bar.style.width        = pct+'%';
+        bar.style.background   = qcolor;
+      } else {
+        pingEl.textContent = 'Unreachable';
+        qualEl.textContent = 'Offline';
+        qualEl.style.color = 'var(--red)';
+        bar.style.width = '5%'; bar.style.background = 'var(--red)';
+      }
+    } catch(e) {
+      document.getElementById('status-text').textContent = '⚠ Server Offline';
+    }
+  }
+
+  async function control(action) {
+    const startB = document.getElementById('btn-start');
+    const stopB  = document.getElementById('btn-stop');
+    startB.disabled = true; stopB.disabled = true;
+    try {
+      const r = await fetch('/control/'+action, { method:'POST' });
+      const d = await r.json();
+      showToast(d.message || action+' sent');
+      addLog('Manual '+action+' triggered', action==='start'?'ok':'err');
+    } catch(e) { showToast('Request failed'); }
+    setTimeout(poll, 600);
+  }
+
+  setInterval(poll, 1500);
+  poll();
+  addLog('Control panel loaded', 'ok');
+</script>
+</body>
+</html>`);
 });
 
-app.get('/tutorial', (req, res) => {
-  res.send(`
-    <html>
-      <head>
-        <title>${config.name} - Setup Guide</title>
-        <style>
-          body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #cbd5e1; padding: 40px; max-width: 800px; margin: 0 auto; line-height: 1.6; }
-          h1, h2 { color: #2dd4bf; }
-          h1 { border-bottom: 2px solid #334155; padding-bottom: 10px; }
-          .card { background: #1e293b; padding: 25px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #334155; }
-          a { color: #38bdf8; text-decoration: none; }
-          code { background: #334155; padding: 2px 6px; border-radius: 4px; color: #e2e8f0; font-family: monospace; }
-          .btn-home { display: inline-block; margin-bottom: 20px; padding: 8px 16px; background: #334155; color: white; border-radius: 6px; text-decoration: none; }
-        </style>
-      </head>
-      <body>
-        <a href="/" class="btn-home">Back to Dashboard</a>
-        <h1>Setup Guide (Under 15 Minutes)</h1>
-        
-        <div class="card">
-          <h2>Step 1: Configure Aternos</h2>
-          <ol>
-            <li>Go to <strong>Aternos</strong>.</li>
-            <li>Install <strong>Paper/Bukkit</strong> software.</li>
-            <li>Enable <strong>Cracked</strong> mode (Green Switch).</li>
-            <li>Install Plugins: <code>ViaVersion</code>, <code>ViaBackwards</code>, <code>ViaRewind</code>.</li>
-          </ol>
-        </div>
-
-        <div class="card">
-          <h2>Step 2: GitHub Setup</h2>
-          <ol>
-            <li>Download this code as ZIP and extract.</li>
-            <li>Edit <code>settings.json</code> with your IP/Port.</li>
-            <li>Upload all files to a new <strong>GitHub Repository</strong>.</li>
-          </ol>
-        </div>
-
-        <div class="card">
-          <h2>Step 3: Render (Free 24/7 Hosting)</h2>
-          <ol>
-            <li>Go to <a href="https://render.com" target="_blank">Render.com</a> and create a Web Service.</li>
-            <li>Connect your GitHub.</li>
-            <li>Build Command: <code>npm install</code></li>
-            <li>Start Command: <code>npm start</code></li>
-            <li><strong>Magic:</strong> The bot automatically pings itself to stay awake!</li>
-          </ol>
-        </div>
-        
-        <p style="text-align: center; margin-top: 40px; color: #64748b;">AFK Bot Dashboard</p>
-      </body>
-    </html>
-  `);
+// ── API: Start / Stop ──────────────────────────────────────
+app.post('/control/start', (req, res) => {
+  if (!manualStop && botState.connected) {
+    return res.json({ ok: false, message: 'Bot is already running.' });
+  }
+  manualStop = false;
+  botState.reconnectAttempts = 0;
+  console.log('[Control] Manual START triggered');
+  // Small delay so the response goes out first
+  setTimeout(() => createBot(), 300);
+  res.json({ ok: true, message: 'Bot starting…' });
 });
 
+app.post('/control/stop', (req, res) => {
+  manualStop = true;
+  console.log('[Control] Manual STOP triggered');
+  if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
+  isReconnecting = false;
+  if (bot) {
+    clearAllIntervals();
+    try { bot.removeAllListeners(); bot.end('Manual stop'); } catch(e) {}
+    bot = null;
+  }
+  botState.connected = false;
+  res.json({ ok: true, message: 'Bot stopped.' });
+});
+
+// ── Health JSON ────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.json({
     status: botState.connected ? 'connected' : 'disconnected',
+    manualStop,
     uptime: Math.floor((Date.now() - botState.startTime) / 1000),
     coords: (bot && bot.entity) ? bot.entity.position : null,
     lastActivity: botState.lastActivity,
     reconnectAttempts: botState.reconnectAttempts,
-    memoryUsage: process.memoryUsage().heapUsed / 1024 / 1024
+    memoryMB: process.memoryUsage().heapUsed / 1024 / 1024,
+    pingMs: lastPingMs
   });
 });
 
@@ -345,6 +482,10 @@ function getReconnectDelay() {
 }
 
 function createBot() {
+  if (manualStop) {
+    console.log('[Bot] Manual stop active — skipping createBot.');
+    return;
+  }
   if (isReconnecting) {
     console.log('[Bot] Already reconnecting, skipping...');
     return;
@@ -488,6 +629,10 @@ function createBot() {
 }
 
 function scheduleReconnect(overrideDelay = null) {
+  if (manualStop) {
+    console.log('[Bot] Manual stop active — skipping reconnect.');
+    return;
+  }
   if (reconnectTimeout) {
     clearTimeout(reconnectTimeout);
   }
